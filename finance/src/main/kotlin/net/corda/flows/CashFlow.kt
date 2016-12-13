@@ -46,6 +46,7 @@ class CashFlow(val command: CashCommand, override val progressTracker: ProgressT
     private fun initiatePayment(req: CashCommand.PayCash): SignedTransaction {
         progressTracker.currentStep = PAYING
         val builder: TransactionBuilder = TransactionType.General.Builder(null)
+        builder.addFlowId(runId.uuid)
         // TODO: Have some way of restricting this to states the caller controls
         val (spendTX, keysForSigning) = try {
             serviceHub.vaultService.generateSpend(
@@ -71,6 +72,7 @@ class CashFlow(val command: CashCommand, override val progressTracker: ProgressT
     private fun exitCash(req: CashCommand.ExitCash): SignedTransaction {
         progressTracker.currentStep = EXITING
         val builder: TransactionBuilder = TransactionType.General.Builder(null)
+        builder.addFlowId(runId.uuid)
         val issuer = serviceHub.myInfo.legalIdentity.ref(req.issueRef)
         try {
             Cash().generateExit(
@@ -119,7 +121,8 @@ class CashFlow(val command: CashCommand, override val progressTracker: ProgressT
     private fun issueCash(req: CashCommand.IssueCash): SignedTransaction {
         progressTracker.currentStep = ISSUING
         val builder: TransactionBuilder = TransactionType.General.Builder(notary = null)
-        val issuer = serviceHub.myInfo.legalIdentity.ref(req.issueRef)
+        builder.addFlowId(runId.uuid)
+        val issuer = PartyAndReference(serviceHub.myInfo.legalIdentity, req.issueRef)
         Cash().generateIssue(builder, req.amount.issuedBy(issuer), req.recipient.owningKey, req.notary)
         val myKey = serviceHub.legalIdentityKey
         builder.signWith(myKey)

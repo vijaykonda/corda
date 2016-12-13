@@ -187,6 +187,10 @@ interface VaultService {
                       amount: Amount<Currency>,
                       to: CompositeKey,
                       onlyFromParties: Set<Party>? = null): Pair<TransactionBuilder, List<CompositeKey>>
+
+    fun  softLockReserve(id: UUID, stateRefs: Set<StateRef>)
+
+    fun  softLockRelease(id: UUID, stateRefs: Set<StateRef>? = null)
 }
 
 inline fun <reified T : LinearState> VaultService.linearHeadsOfType() = linearHeadsOfType_(T::class.java)

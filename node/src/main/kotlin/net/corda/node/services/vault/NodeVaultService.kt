@@ -1,6 +1,7 @@
 package net.corda.node.services.vault
 
 import com.google.common.collect.Sets
+import kotlinx.support.jdk8.collections.getOrDefault
 import net.corda.contracts.asset.Cash
 import net.corda.core.ThreadBox
 import net.corda.core.bufferUntilSubscribed
@@ -37,7 +38,7 @@ import java.util.*
  * TODO: keep an audit trail with time stamps of previously unconsumed states "as of" a particular point in time.
  * TODO: have transaction storage do some caching.
  */
-class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsToken(), VaultService {
+open class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsToken(), VaultService {
 
     private companion object {
         val log = loggerFor<NodeVaultService>()
@@ -62,6 +63,10 @@ class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsT
     }
 
     private val mutex = ThreadBox(content = object {
+
+        // TODO: this should also be a persistent structure
+        val softLockedStates = mutableMapOf<UUID, Collection<StateRef>>()
+
         val unconsumedStates = object : AbstractJDBCHashSet<StateRef, StatesSetTable>(StatesSetTable) {
             override fun elementFromRow(row: ResultRow): StateRef = StateRef(row[table.stateRef.txId], row[table.stateRef.index])
 
@@ -195,6 +200,26 @@ class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsT
         }
     }
 
+    override fun softLockReserve(id: UUID, stateRefs: Set<StateRef>) {
+        if (stateRefs.isNotEmpty()) {
+            mutex.locked {
+                softLockedStates.getOrPut(key = id, defaultValue = { emptyList<StateRef>() })
+                softLockedStates.put(id, stateRefs)
+                if (softLockedStates.isNotEmpty())
+                    log.info("Reserving soft lock states for $id: $stateRefs")
+            }
+        }
+    }
+
+    override fun softLockRelease(id: UUID, stateRefs: Set<StateRef>?) {
+        mutex.locked {
+            if (stateRefs != null && stateRefs.isNotEmpty()) {
+                log.info("Releasing all soft locked states for $id: ${softLockedStates[id]}")
+                softLockedStates.remove(id)
+            }
+        }
+    }
+
     /**
      * Generate a transaction that moves an amount of currency to the given pubkey.
      *
@@ -242,50 +267,77 @@ class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsT
         // highest total value
         acceptableCoins = acceptableCoins.filter { it.state.notary == tx.notary }
 
-        val (gathered, gatheredAmount) = gatherCoins(acceptableCoins, amount)
-        val takeChangeFrom = gathered.firstOrNull()
-        val change = if (takeChangeFrom != null && gatheredAmount > amount) {
-            Amount(gatheredAmount.quantity - amount.quantity, takeChangeFrom.state.data.amount.token)
-        } else {
-            null
+        var lockedStatesToUse: Collection<StateRef> = emptyList()
+        mutex.locked {
+            if (softLockedStates.containsKey(tx.flowId))
+                lockedStatesToUse = softLockedStates.getOrDefault(tx.flowId, emptyList())
         }
-        val keysUsed = gathered.map { it.state.data.owner }.toSet()
 
-        val states = gathered.groupBy { it.state.data.amount.token.issuer }.map {
-            val coins = it.value
-            val totalAmount = coins.map { it.state.data.amount }.sumOrThrow()
-            deriveState(coins.first().state, totalAmount, to)
-        }.sortedBy { it.data.amount.quantity }
+        // TODO:
+        var keysUsed = emptyList<CompositeKey>()
+        if (lockedStatesToUse.isNotEmpty()) {
+            val sr = statesForRefs(lockedStatesToUse.toList())
+            val gathered = sr.map { StateAndRef<Cash.State>(it.value as TransactionState<Cash.State>, it.key) }
+            val outputs = sr.map { it.value as TransactionState<Cash.State> }
+            keysUsed = gathered.map { it.state.data.owner }
 
-        val outputs = if (change != null) {
-            // Just copy a key across as the change key. In real life of course, this works but leaks private data.
-            // In bitcoinj we derive a fresh key here and then shuffle the outputs to ensure it's hard to follow
-            // value flows through the transaction graph.
-            val existingOwner = gathered.first().state.data.owner
-            // Add a change output and adjust the last output downwards.
-            states.subList(0, states.lastIndex) +
-                    states.last().let {
-                        val spent = it.data.amount.withoutIssuer() - change.withoutIssuer()
-                        deriveState(it, Amount(spent.quantity, it.data.amount.token), it.data.owner)
-                    } +
-                    states.last().let {
-                        deriveState(it, Amount(change.quantity, it.data.amount.token), existingOwner)
-                    }
-        } else states
+            for (state in gathered) tx.addInputState(state)
+            for (state in outputs) tx.addOutputState(state)
+        }
 
-        for (state in gathered) tx.addInputState(state)
-        for (state in outputs) tx.addOutputState(state)
+        else {
+            // exclude any soft locked states
+            mutex.locked {
+                val softLockStatesForRefs = statesForRefs(softLockedStates.flatMap { it.value })
+                val softLockStatesAndRefs = softLockStatesForRefs.map {
+                    StateAndRef<Cash.State>(it.value as TransactionState<Cash.State>, it.key)
+                }
+                acceptableCoins = acceptableCoins.minus(softLockStatesAndRefs)
+            }
 
-        // What if we already have a move command with the right keys? Filter it out here or in platform code?
-        val keysList = keysUsed.toList()
-        tx.addCommand(Cash().generateMoveCommand(), keysList)
+            val (gathered, gatheredAmount) = gatherCoins(acceptableCoins, amount)
+            val takeChangeFrom = gathered.firstOrNull()
+            val change = if (takeChangeFrom != null && gatheredAmount > amount) {
+                Amount(gatheredAmount.quantity - amount.quantity, takeChangeFrom.state.data.amount.token)
+            } else {
+                null
+            }
+            keysUsed = gathered.map { it.state.data.owner }
+
+            val states = gathered.groupBy { it.state.data.amount.token.issuer }.map {
+                val coins = it.value
+                val totalAmount = coins.map { it.state.data.amount }.sumOrThrow()
+                deriveState(coins.first().state, totalAmount, to)
+            }.sortedBy { it.data.amount.quantity }
+
+            val outputs = if (change != null) {
+                // Just copy a key across as the change key. In real life of course, this works but leaks private data.
+                // In bitcoinj we derive a fresh key here and then shuffle the outputs to ensure it's hard to follow
+                // value flows through the transaction graph.
+                val existingOwner = gathered.first().state.data.owner
+                // Add a change output and adjust the last output downwards.
+                states.subList(0, states.lastIndex) +
+                        states.last().let {
+                            val spent = it.data.amount.withoutIssuer() - change.withoutIssuer()
+                            deriveState(it, Amount(spent.quantity, it.data.amount.token), it.data.owner)
+                        } +
+                        states.last().let {
+                            deriveState(it, Amount(change.quantity, it.data.amount.token), existingOwner)
+                        }
+            } else states
+
+            for (state in gathered) tx.addInputState(state)
+            for (state in outputs) tx.addOutputState(state)
+        }
+
+        tx.addCommand(Cash().generateMoveCommand(), keysUsed)
 
         // update Vault
         //        notify(tx.toWireTransaction())
         // Vault update must be completed AFTER transaction is recorded to ledger storage!!!
         // (this is accomplished within the recordTransaction function)
 
-        return Pair(tx, keysList)
+        return Pair(tx, keysUsed)
     }
 
     private fun deriveState(txState: TransactionState<Cash.State>, amount: Amount<Issued<Currency>>, owner: CompositeKey)

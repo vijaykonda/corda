@@ -27,6 +27,7 @@ import java.util.*
 open class TransactionBuilder(
         protected val type: TransactionType = TransactionType.General(),
         var notary: Party? = null,
+        var flowId: UUID? = null,
         protected val inputs: MutableList<StateRef> = arrayListOf(),
         protected val attachments: MutableList<SecureHash> = arrayListOf(),
         protected val outputs: MutableList<TransactionState<ContractState>> = arrayListOf(),
@@ -184,4 +185,7 @@ open class TransactionBuilder(
     fun outputStates(): List<TransactionState<*>> = ArrayList(outputs)
     fun commands(): List<Command> = ArrayList(commands)
     fun attachments(): List<SecureHash> = ArrayList(attachments)
+    fun  addFlowId(flowId: UUID) {
+        this.flowId = flowId
+    }
 }
