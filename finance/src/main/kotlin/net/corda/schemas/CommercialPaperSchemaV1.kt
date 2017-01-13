@@ -1,7 +1,9 @@
 package net.corda.schemas
 
+import io.requery.Convert
 import net.corda.core.schemas.MappedSchema
 import net.corda.core.schemas.PersistentState
+import net.corda.core.schemas.requery.converters.InstantConverter
 import java.time.Instant
 import javax.persistence.Column
 import javax.persistence.Entity
@@ -29,6 +31,7 @@ object CommercialPaperSchemaV1 : MappedSchema(schemaFamily = CommercialPaperSche
             @Column(name = "owner_key")
             var owner: String,
 
+            @Convert(InstantConverter::class)
             @Column(name = "maturity_instant")
             var maturity: Instant,
 

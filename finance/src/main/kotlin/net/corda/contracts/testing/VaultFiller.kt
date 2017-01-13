@@ -5,10 +5,7 @@ package net.corda.contracts.testing
 import net.corda.contracts.asset.Cash
 import net.corda.contracts.asset.DUMMY_CASH_ISSUER
 import net.corda.contracts.asset.DUMMY_CASH_ISSUER_KEY
-import net.corda.core.contracts.Amount
-import net.corda.core.contracts.Issued
-import net.corda.core.contracts.PartyAndReference
-import net.corda.core.contracts.TransactionType
+import net.corda.core.contracts.*
 import net.corda.core.crypto.CompositeKey
 import net.corda.core.crypto.Party
 import net.corda.core.node.ServiceHub
@@ -38,7 +35,7 @@ fun ServiceHub.fillWithSomeTestCash(howMuch: Amount<Currency>,
                                     ref: OpaqueBytes = OpaqueBytes(ByteArray(1, { 1 })),
                                     ownedBy: CompositeKey? = null,
                                     issuedBy: PartyAndReference = DUMMY_CASH_ISSUER,
-                                    issuerKey: KeyPair = DUMMY_CASH_ISSUER_KEY): Vault {
+                                    issuerKey: KeyPair = DUMMY_CASH_ISSUER_KEY): Vault<Cash.State> {
     val amounts = calculateRandomlySizedAmounts(howMuch, atLeastThisManyStates, atMostThisManyStates, rng)
 
     val myKey: CompositeKey = ownedBy ?: myInfo.legalIdentity.owningKey

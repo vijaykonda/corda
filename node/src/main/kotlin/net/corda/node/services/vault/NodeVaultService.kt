@@ -1,6 +1,9 @@
 package net.corda.node.services.vault
 
 import com.google.common.collect.Sets
+import io.requery.TransactionIsolation
+import io.requery.kotlin.`in`
+import io.requery.kotlin.eq
 import net.corda.contracts.asset.Cash
 import net.corda.core.ThreadBox
 import net.corda.core.bufferUntilSubscribed
@@ -11,16 +14,20 @@ import net.corda.core.crypto.SecureHash
 import net.corda.core.node.ServiceHub
 import net.corda.core.node.services.Vault
 import net.corda.core.node.services.VaultService
+import net.corda.core.node.services.unconsumedStates
 import net.corda.core.serialization.SingletonSerializeAsToken
+import net.corda.core.serialization.createKryo
+import net.corda.core.serialization.deserialize
+import net.corda.core.serialization.serialize
 import net.corda.core.tee
 import net.corda.core.transactions.TransactionBuilder
 import net.corda.core.transactions.WireTransaction
 import net.corda.core.utilities.loggerFor
 import net.corda.core.utilities.trace
-import net.corda.node.utilities.*
-import org.jetbrains.exposed.sql.ResultRow
-import org.jetbrains.exposed.sql.select
-import org.jetbrains.exposed.sql.statements.InsertStatement
+import net.corda.node.services.database.RequeryConfiguration
+import net.corda.node.services.vault.schemas.*
+import net.corda.node.utilities.bufferUntilDatabaseCommit
+import net.corda.node.utilities.wrapWithDatabaseTransaction
 import rx.Observable
 import rx.subjects.PublishSubject
 import java.security.PublicKey
@@ -37,66 +44,16 @@ import java.util.*
  * TODO: keep an audit trail with time stamps of previously unconsumed states "as of" a particular point in time.
  * TODO: have transaction storage do some caching.
  */
-class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsToken(), VaultService {
+class NodeVaultService(private val services: ServiceHub, dataSourceProperties: Properties) : SingletonSerializeAsToken(), VaultService {
 
     private companion object {
         val log = loggerFor<NodeVaultService>()
     }
 
-    private object StatesSetTable : JDBCHashedTable("${NODE_DATABASE_PREFIX}vault_unconsumed_states") {
-        val stateRef = stateRef("transaction_id", "output_index")
-    }
-
-    private data class TxnNote(val txnId: SecureHash, val note: String) {
-        override fun toString() = "$txnId: $note"
-    }
-
-    private object CashBalanceTable : JDBCHashedTable("${NODE_DATABASE_PREFIX}vault_cash_balances") {
-        val currency = varchar("currency", 3)
-        val amount = long("amount")
-    }
-
-    private object TransactionNotesTable : JDBCHashedTable("${NODE_DATABASE_PREFIX}vault_txn_notes") {
-        val txnId = secureHash("txnId").index()
-        val note = text("note")
-    }
+    val configuration = RequeryConfiguration(dataSourceProperties)
+    val session = configuration.sessionForModel(Models.VAULT)
 
     private val mutex = ThreadBox(content = object {
-        val unconsumedStates = object : AbstractJDBCHashSet<StateRef, StatesSetTable>(StatesSetTable) {
-            override fun elementFromRow(row: ResultRow): StateRef = StateRef(row[table.stateRef.txId], row[table.stateRef.index])
-
-            override fun addElementToInsert(insert: InsertStatement, entry: StateRef, finalizables: MutableList<() -> Unit>) {
-                insert[table.stateRef.txId] = entry.txhash
-                insert[table.stateRef.index] = entry.index
-            }
-        }
-
-        val transactionNotes = object : AbstractJDBCHashSet<TxnNote, TransactionNotesTable>(TransactionNotesTable) {
-            override fun elementFromRow(row: ResultRow): TxnNote = TxnNote(row[table.txnId], row[table.note])
-
-            override fun addElementToInsert(insert: InsertStatement, entry: TxnNote, finalizables: MutableList<() -> Unit>) {
-                insert[table.txnId] = entry.txnId
-                insert[table.note] = entry.note
-            }
-
-            // TODO: caching (2nd tier db cache) and db results filtering (max records, date, other)
-            fun select(txnId: SecureHash): Iterable<String> {
-                return table.select { table.txnId.eq(txnId) }.map { row -> row[table.note] }.toSet().asIterable()
-            }
-        }
-
-        val cashBalances = object : AbstractJDBCHashMap<Currency, Amount<Currency>, CashBalanceTable>(CashBalanceTable) {
-            override fun keyFromRow(row: ResultRow): Currency = Currency.getInstance(row[table.currency])
-            override fun valueFromRow(row: ResultRow): Amount<Currency> = Amount(row[table.amount], keyFromRow(row))
-
-            override fun addKeyToInsert(insert: InsertStatement, entry: Map.Entry<Currency, Amount<Currency>>, finalizables: MutableList<() -> Unit>) {
-                insert[table.currency] = entry.key.currencyCode
-            }
-
-            override fun addValueToInsert(insert: InsertStatement, entry: Map.Entry<Currency, Amount<Currency>>, finalizables: MutableList<() -> Unit>) {
-                insert[table.amount] = entry.value.quantity
-            }
-        }
 
         val _updatesPublisher = PublishSubject.create<Vault.Update>()
         val _rawUpdatesPublisher = PublishSubject.create<Vault.Update>()
@@ -105,22 +62,40 @@ class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsT
         // For use during publishing only.
         val updatesPublisher: rx.Observer<Vault.Update> get() = _updatesPublisher.bufferUntilDatabaseCommit().tee(_rawUpdatesPublisher)
 
-        fun allUnconsumedStates(): List<StateAndRef<ContractState>> {
-            // Ideally we'd map this transform onto a sequence, but we can't have a lazy list here, since accessing it
-            // from a flow might end up trying to serialize the captured context - vault internal state or db context.
-            return unconsumedStates.map {
-                val storedTx = services.storageService.validatedTransactions.getTransaction(it.txhash) ?: throw Error("Found transaction hash ${it.txhash} in unconsumed contract states that is not in transaction storage.")
-                StateAndRef(storedTx.tx.outputs[it.index], it)
-            }
-        }
-
         fun recordUpdate(update: Vault.Update): Vault.Update {
             if (update != Vault.NoUpdate) {
                 val producedStateRefs = update.produced.map { it.ref }
+                val producedStateRefsMap = update.produced.associateBy { it.ref }
                 val consumedStateRefs = update.consumed.map { it.ref }
                 log.trace { "Removing $consumedStateRefs consumed contract states and adding $producedStateRefs produced contract states to the database." }
-                unconsumedStates.removeAll(consumedStateRefs)
-                unconsumedStates.addAll(producedStateRefs)
+
+                session.withTransaction(TransactionIsolation.REPEATABLE_READ) {
+                    producedStateRefsMap.forEach { it ->
+                        val state = VaultStatesEntity()
+                        state.apply {
+                            txId = it.key.txhash.toString()
+                            index = it.key.index
+                            stateStatus = Vault.StateStatus.UNCONSUMED
+                            contractStateClassName = it.value.state.data.javaClass.name
+                            // TODO: revisit Kryo bug when using THREAD_LOCAL_KYRO
+                            contractState = it.value.state.serialize(createKryo()).bytes
+                            notaryName = it.value.state.notary.name
+                            notaryKey = it.value.state.notary.owningKey.toBase58String()
+                            recordedTime = services.clock.instant()
+                        }
+                        insert(state)
+                    }
+                    consumedStateRefs.forEach { stateRef ->
+                        val queryKey = io.requery.proxy.CompositeKey(mapOf(VaultStatesEntity.TX_ID to stateRef.txhash.toString(),
+                                                                           VaultStatesEntity.INDEX to stateRef.index))
+                        val state = findByKey(VaultStatesEntity::class, queryKey)
+                        state?.run {
+                            stateStatus = Vault.StateStatus.CONSUMED
+                            consumedTime = services.clock.instant()
+                            update(state)
+                        }
+                    }
+                }
             }
             return update
         }
@@ -133,8 +108,18 @@ class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsT
                 (produced.keys + consumed.keys).map { currency ->
                     val producedAmount = produced[currency] ?: Amount(0, currency)
                     val consumedAmount = consumed[currency] ?: Amount(0, currency)
-                    val currentBalance = cashBalances[currency] ?: Amount(0, currency)
-                    cashBalances[currency] = currentBalance + producedAmount - consumedAmount
+
+                    val cashBalanceEntity = VaultCashBalancesEntity()
+                    cashBalanceEntity.currency = currency.currencyCode
+                    cashBalanceEntity.amount = producedAmount.quantity - consumedAmount.quantity
+
+                    session.withTransaction(TransactionIsolation.REPEATABLE_READ) {
+                        val state = findByKey(VaultCashBalancesEntity::class, currency.currencyCode)
+                        state?.run {
+                            amount += producedAmount.quantity - consumedAmount.quantity
+                        }
+                        upsert(state ?: cashBalanceEntity)
+                    }
                 }
             }
         }
@@ -147,9 +132,15 @@ class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsT
         }
     })
 
-    override val cashBalances: Map<Currency, Amount<Currency>> get() = mutex.locked { HashMap(cashBalances) }
-
-    override val currentVault: Vault get() = mutex.locked { Vault(allUnconsumedStates()) }
+    override val cashBalances: Map<Currency, Amount<Currency>> get() {
+        val cashBalancesByCurrency =
+                session.withTransaction(TransactionIsolation.REPEATABLE_READ) {
+                    val balances = select(VaultSchema.VaultCashBalances::class)
+                    balances.get().toList()
+                }
+        return cashBalancesByCurrency.associateBy({ Currency.getInstance(it.currency) },
+                { Amount(it.amount, Currency.getInstance(it.currency)) })
+    }
 
     override val rawUpdates: Observable<Vault.Update>
         get() = mutex.locked { _rawUpdatesPublisher }
@@ -157,19 +148,51 @@ class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsT
     override val updates: Observable<Vault.Update>
         get() = mutex.locked { _updatesInDbTx }
 
-    override fun track(): Pair<Vault, Observable<Vault.Update>> {
+    override fun track(): Pair<Vault<ContractState>, Observable<Vault.Update>> {
         return mutex.locked {
-            Pair(Vault(allUnconsumedStates()), _updatesPublisher.bufferUntilSubscribed().wrapWithDatabaseTransaction())
+            Pair(Vault(unconsumedStates<ContractState>()), _updatesPublisher.bufferUntilSubscribed().wrapWithDatabaseTransaction())
         }
     }
 
-    /**
-     * Returns a snapshot of the heads of LinearStates.
-     *
-     * TODO: Represent this using an actual JDBCHashMap or look at vault design further.
-     */
-    override val linearHeads: Map<UniqueIdentifier, StateAndRef<LinearState>>
-        get() = currentVault.states.filterStatesOfType<LinearState>().associateBy { it.state.data.linearId }.mapValues { it.value }
+    override fun <T: ContractState> states(clazz: Class<T>, statuses: EnumSet<Vault.StateStatus>): List<StateAndRef<T>> {
+        val stateAndRefs =
+            session.withTransaction(TransactionIsolation.REPEATABLE_READ) {
+                var result = select(VaultSchema.VaultStates::class)
+                                .where(VaultSchema.VaultStates::stateStatus `in` statuses)
+                // TODO: temporary fix to continue supporting track() function (until becomes Typed)
+                if (clazz != ContractState::class.java)
+                    result.and (VaultSchema.VaultStates::contractStateClassName eq clazz.name)
+                result.get()
+                        .map { it ->
+                            val stateRef = StateRef(SecureHash.parse(it.txId), it.index)
+                            // TODO: revisit Kryo bug when using THREAD_LOCAL_KYRO
+                            val state = it.contractState.deserialize<TransactionState<T>>(createKryo())
+                            StateAndRef(state, stateRef)
+                        }.toList()
+            }
+        return stateAndRefs
+    }
+
+    override fun statesForRefs(refs: List<StateRef>): Map<StateRef, TransactionState<*>?> {
+        val stateAndRefs =
+                session.withTransaction(TransactionIsolation.REPEATABLE_READ) {
+                    var results: List<StateAndRef<*>> = emptyList()
+                    refs.forEach {
+                        val result = select(VaultSchema.VaultStates::class)
+                                .where(VaultSchema.VaultStates::stateStatus eq Vault.StateStatus.UNCONSUMED)
+                                .and(VaultSchema.VaultStates::txId eq it.txhash.toString())
+                                .and(VaultSchema.VaultStates::index eq it.index)
+                        result.get()?.each {
+                            val stateRef = StateRef(SecureHash.parse(it.txId), it.index)
+                            val state = it.contractState.deserialize<TransactionState<*>>()
+                            results += StateAndRef(state, stateRef)
+                        }
+                    }
+                    results
+                }
+
+        return stateAndRefs.associateBy({ it.ref }, { it.state })
+    }
 
     override fun notifyAll(txns: Iterable<WireTransaction>) {
         val ourKeys = services.keyManagementService.keys.keys
@@ -184,14 +207,17 @@ class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsT
     }
 
     override fun addNoteToTransaction(txnId: SecureHash, noteText: String) {
-        mutex.locked {
-            transactionNotes.add(TxnNote(txnId, noteText))
+        session.withTransaction(TransactionIsolation.REPEATABLE_READ) {
+            val txnNoteEntity = VaultTxnNoteEntity()
+            txnNoteEntity.txId = txnId.toString()
+            txnNoteEntity.note = noteText
+            insert(txnNoteEntity)
         }
     }
 
     override fun getTransactionNotes(txnId: SecureHash): Iterable<String> {
-        mutex.locked {
-            return transactionNotes.select(txnId)
+        return session.withTransaction(TransactionIsolation.REPEATABLE_READ) {
+            (select(VaultSchema.VaultTxnNote::class) where (VaultSchema.VaultTxnNote::txId eq txnId.toString())).get().asIterable().map { it.note }
         }
     }
 
@@ -219,7 +245,7 @@ class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsT
         //
         // Finally, we add the states to the provided partial transaction.
 
-        val assetsStates = currentVault.statesOfType<Cash.State>()
+        val assetsStates = unconsumedStates<Cash.State>()
 
         val currency = amount.token
         var acceptableCoins = run {
@@ -315,24 +341,28 @@ class NodeVaultService(private val services: ServiceHub) : SingletonSerializeAsT
 
         // Now calculate the states that are being spent by this transaction.
         val consumedRefs = tx.inputs.toHashSet()
-        // We use Guava union here as it's lazy for contains() which is how retainAll() is implemented.
-        // i.e. retainAll() iterates over consumed, checking contains() on the parameter.  Sets.union() does not physically create
-        // a new collection and instead contains() just checks the contains() of both parameters, and so we don't end up
-        // iterating over all (a potentially very large) unconsumedStates at any point.
-        mutex.locked {
-            consumedRefs.retainAll(Sets.union(netDelta.produced, unconsumedStates))
-        }
+        val consumedStates =
+            if (consumedRefs.isNotEmpty()) {
+                val stateType = services.loadState(consumedRefs.first()).data.javaClass
+
+                // We use Guava union here as it's lazy for contains() which is how retainAll() is implemented.
+                // i.e. retainAll() iterates over consumed, checking contains() on the parameter.  Sets.union() does not physically create
+                // a new collection and instead contains() just checks the contains() of both parameters
+                val unconsumedStates = states(stateType, EnumSet.of(Vault.StateStatus.UNCONSUMED))
+                consumedRefs.retainAll(Sets.union(netDelta.produced.map { it.ref }.toSet(), unconsumedStates.map { it.ref }.toSet()))
+                consumedRefs.mapNotNull {
+                    val state = unconsumedStates.associateBy { it.ref } [StateRef(it.txhash, it.index)]
+                    state?.let {
+                        StateAndRef(state.state, it.ref)
+                    }
+                }.toSet()
+            } else emptySet()
 
         // Is transaction irrelevant?
         if (consumedRefs.isEmpty() && ourNewStates.isEmpty()) {
             log.trace { "tx ${tx.id} was irrelevant to this vault, ignoring" }
             return Vault.NoUpdate
         }
-
-        val consumedStates = consumedRefs.map {
-            val state = services.loadState(it)
-            StateAndRef(state, it)
-        }.toSet()
 
         return Vault.Update(consumedStates, ourNewStates.toHashSet())
     }

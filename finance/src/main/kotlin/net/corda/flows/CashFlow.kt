@@ -8,6 +8,8 @@ import net.corda.core.crypto.keys
 import net.corda.core.crypto.toStringShort
 import net.corda.core.flows.FlowException
 import net.corda.core.flows.FlowLogic
+import net.corda.core.flows.StateMachineRunId
+import net.corda.core.node.services.unconsumedStates
 import net.corda.core.serialization.OpaqueBytes
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
@@ -76,7 +78,7 @@ class CashFlow(val command: CashCommand, override val progressTracker: ProgressT
             Cash().generateExit(
                     builder,
                     req.amount.issuedBy(issuer),
-                    serviceHub.vaultService.currentVault.statesOfType<Cash.State>().filter { it.state.data.owner == issuer.party.owningKey })
+                    serviceHub.vaultService.unconsumedStates<Cash.State>().filter { it.state.data.owner == issuer.party.owningKey })
         } catch (e: InsufficientBalanceException) {
             throw CashException("Exiting more cash than exists", e)
         }

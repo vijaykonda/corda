@@ -20,13 +20,14 @@ import net.corda.node.services.vault.NodeVaultService
 import net.corda.testing.MOCK_IDENTITY_SERVICE
 import net.corda.testing.node.MockNetworkMapCache
 import net.corda.testing.node.MockStorageService
+import net.corda.testing.node.makeTestDataSourceProperties
 import java.time.Clock
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.reflect.KClass
 
 @Suppress("LeakingThis")
 open class MockServiceHubInternal(
-        customVault: VaultService? = null,
+        val customVault: VaultService? = null,
         val keyManagement: KeyManagementService? = null,
         val net: MessagingServiceInternal? = null,
         val identity: IdentityService? = MOCK_IDENTITY_SERVICE,
@@ -37,7 +38,8 @@ open class MockServiceHubInternal(
         val flowFactory: FlowLogicRefFactory? = FlowLogicRefFactory(),
         val schemas: SchemaService? = NodeSchemaService()
 ) : ServiceHubInternal() {
-    override val vaultService: VaultService = customVault ?: NodeVaultService(this)
+    override val vaultService: VaultService
+        get() = customVault ?: throw UnsupportedOperationException()
     override val keyManagementService: KeyManagementService
         get() = keyManagement ?: throw UnsupportedOperationException()
     override val identityService: IdentityService
