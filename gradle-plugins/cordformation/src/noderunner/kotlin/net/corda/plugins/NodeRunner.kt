@@ -92,7 +92,7 @@ do script "bash -c 'cd $dir; /usr/libexec/java_home -v 1.8 --exec $javaCmd && ex
             """cmd /C "start $javaCmd""""
         } else {
             // Assume Linux
-            """xterm -T "$nodeName" -e '$javaCmd'"""
+            """xterm -T "$nodeName" -e $javaCmd"""
         }
 
         return Runtime.getRuntime().exec(cmd, null, dir)
