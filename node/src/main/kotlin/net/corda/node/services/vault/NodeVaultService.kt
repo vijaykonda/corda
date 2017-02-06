@@ -213,9 +213,22 @@ open class NodeVaultService(private val services: ServiceHub) : SingletonSeriali
 
     override fun softLockRelease(id: UUID, stateRefs: Set<StateRef>?) {
         mutex.locked {
-            if (stateRefs != null && stateRefs.isNotEmpty()) {
-                log.info("Releasing all soft locked states for $id: ${softLockedStates[id]}")
-                softLockedStates.remove(id)
+            softLockedStates[id]?.let {
+                stateRefs?.let {
+                    val states = softLockedStates[id]
+                    if (stateRefs.isNotEmpty()) {
+                        states?.let {
+                            log.info("Releasing ${stateRefs.count()} soft locked states for $id: $stateRefs")
+                            states.minus(stateRefs)
+                        }
+                    }
+                    else {
+                        states?.let {
+                            log.info("Releasing all soft locked states for $id: ${softLockedStates[id]}")
+                            softLockedStates.remove(id)
+                        }
+                    }
+                }
             }
         }
     }
@@ -267,69 +280,66 @@ open class NodeVaultService(private val services: ServiceHub) : SingletonSeriali
         // highest total value
         acceptableCoins = acceptableCoins.filter { it.state.notary == tx.notary }
 
-        var lockedStatesToUse: Collection<StateRef> = emptyList()
+        var gathered: List<StateAndRef<Cash.State>> = emptyList()
+        var gatheredAmount: Amount<Currency> = Amount(0, USD)
         mutex.locked {
-            if (softLockedStates.containsKey(tx.flowId))
-                lockedStatesToUse = softLockedStates.getOrDefault(tx.flowId, emptyList())
-        }
-
-        // TODO:
-        var keysUsed = emptyList<CompositeKey>()
-        if (lockedStatesToUse.isNotEmpty()) {
-            val sr = statesForRefs(lockedStatesToUse.toList())
-            val gathered = sr.map { StateAndRef<Cash.State>(it.value as TransactionState<Cash.State>, it.key) }
-            val outputs = sr.map { it.value as TransactionState<Cash.State> }
-            keysUsed = gathered.map { it.state.data.owner }
-
-            for (state in gathered) tx.addInputState(state)
-            for (state in outputs) tx.addOutputState(state)
-        }
-
-        else {
-            // exclude any soft locked states
-            mutex.locked {
-                val softLockStatesForRefs = statesForRefs(softLockedStates.flatMap { it.value })
-                val softLockStatesAndRefs = softLockStatesForRefs.map {
-                    StateAndRef<Cash.State>(it.value as TransactionState<Cash.State>, it.key)
-                }
-                acceptableCoins = acceptableCoins.minus(softLockStatesAndRefs)
+            // exclude soft locked states reserved by others
+            val softLockStatesForRefs = statesForRefs(softLockedStates.flatMap { it.value })
+            val softLockStatesAndRefs = softLockStatesForRefs.map {
+                StateAndRef(it.value as TransactionState<Cash.State>, it.key)
             }
+            softLockStatesAndRefs.forEach { log.info("Excluding soft lock states for ${tx.lockId}: ${it.ref}") }
+            acceptableCoins = acceptableCoins.minus(softLockStatesAndRefs)
 
-            val (gathered, gatheredAmount) = gatherCoins(acceptableCoins, amount)
-            val takeChangeFrom = gathered.firstOrNull()
-            val change = if (takeChangeFrom != null && gatheredAmount > amount) {
-                Amount(gatheredAmount.quantity - amount.quantity, takeChangeFrom.state.data.amount.token)
-            } else {
-                null
+            // include soft locked states reserved by me
+            val mySoftLockedStates = softLockedStates.getOrDefault(tx.lockId, emptyList())
+            val mySoftLockStatesForRefs = statesForRefs(mySoftLockedStates.toList())
+            val mySoftLockStatesAndRefs = mySoftLockStatesForRefs.map {
+                StateAndRef(it.value as TransactionState<Cash.State>, it.key)
             }
-            keysUsed = gathered.map { it.state.data.owner }
+            mySoftLockStatesAndRefs.forEach { log.info("Including soft lock states for ${tx.lockId}: ${it.ref}") }
+            acceptableCoins = acceptableCoins.plus(mySoftLockStatesAndRefs)
 
-            val states = gathered.groupBy { it.state.data.amount.token.issuer }.map {
-                val coins = it.value
-                val totalAmount = coins.map { it.state.data.amount }.sumOrThrow()
-                deriveState(coins.first().state, totalAmount, to)
-            }.sortedBy { it.data.amount.quantity }
-
-            val outputs = if (change != null) {
-                // Just copy a key across as the change key. In real life of course, this works but leaks private data.
-                // In bitcoinj we derive a fresh key here and then shuffle the outputs to ensure it's hard to follow
-                // value flows through the transaction graph.
-                val existingOwner = gathered.first().state.data.owner
-                // Add a change output and adjust the last output downwards.
-                states.subList(0, states.lastIndex) +
-                        states.last().let {
-                            val spent = it.data.amount.withoutIssuer() - change.withoutIssuer()
-                            deriveState(it, Amount(spent.quantity, it.data.amount.token), it.data.owner)
-                        } +
-                        states.last().let {
-                            deriveState(it, Amount(change.quantity, it.data.amount.token), existingOwner)
-                        }
-            } else states
-
-            for (state in gathered) tx.addInputState(state)
-            for (state in outputs) tx.addOutputState(state)
+            val gatheredCoins = gatherCoins(acceptableCoins, amount)
+            gathered = gatheredCoins.first
+            gatheredAmount = gatheredCoins.second
+            softLockReserve(tx.lockId, gathered.map { it.ref }.toSet())
         }
 
+        val takeChangeFrom = gathered.firstOrNull()
+        val change = if (takeChangeFrom != null && gatheredAmount > amount) {
+            Amount(gatheredAmount.quantity - amount.quantity, takeChangeFrom.state.data.amount.token)
+        } else {
+            null
+        }
+        val keysUsed = gathered.map { it.state.data.owner }
+
+        val states = gathered.groupBy { it.state.data.amount.token.issuer }.map {
+            val coins = it.value
+            val totalAmount = coins.map { it.state.data.amount }.sumOrThrow()
+            deriveState(coins.first().state, totalAmount, to)
+        }.sortedBy { it.data.amount.quantity }
+
+        val outputs = if (change != null) {
+            // Just copy a key across as the change key. In real life of course, this works but leaks private data.
+            // In bitcoinj we derive a fresh key here and then shuffle the outputs to ensure it's hard to follow
+            // value flows through the transaction graph.
+            val existingOwner = gathered.first().state.data.owner
+            // Add a change output and adjust the last output downwards.
+            states.subList(0, states.lastIndex) +
+                    states.last().let {
+                        val spent = it.data.amount.withoutIssuer() - change.withoutIssuer()
+                        deriveState(it, Amount(spent.quantity, it.data.amount.token), it.data.owner)
+                    } +
+                    states.last().let {
+                        deriveState(it, Amount(change.quantity, it.data.amount.token), existingOwner)
+                    }
+        } else states
+
+        for (state in gathered) tx.addInputState(state)
+        for (state in outputs) tx.addOutputState(state)
+
+        // What if we already have a move command with the right keys? Filter it out here or in platform code?
         tx.addCommand(Cash().generateMoveCommand(), keysUsed)
 
         // update Vault
@@ -387,11 +397,13 @@ open class NodeVaultService(private val services: ServiceHub) : SingletonSeriali
             log.trace { "tx ${tx.id} was irrelevant to this vault, ignoring" }
             return Vault.NoUpdate
         }
+        softLockRelease(tx.lockId, consumedRefs)
 
         val consumedStates = consumedRefs.map {
             val state = services.loadState(it)
             StateAndRef(state, it)
         }.toSet()
+
 
         return Vault.Update(consumedStates, ourNewStates.toHashSet())
     }

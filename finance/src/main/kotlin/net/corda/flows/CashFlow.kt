@@ -46,7 +46,7 @@ class CashFlow(val command: CashCommand, override val progressTracker: ProgressT
     private fun initiatePayment(req: CashCommand.PayCash): SignedTransaction {
         progressTracker.currentStep = PAYING
         val builder: TransactionBuilder = TransactionType.General.Builder(null)
-        builder.addFlowId(runId.uuid)
+        builder.addLockId(runId.uuid)
         // TODO: Have some way of restricting this to states the caller controls
         val (spendTX, keysForSigning) = try {
             serviceHub.vaultService.generateSpend(
@@ -55,7 +55,7 @@ class CashFlow(val command: CashCommand, override val progressTracker: ProgressT
                     req.recipient.owningKey,
                     setOf(req.amount.token.issuer.party))
         } catch (e: InsufficientBalanceException) {
-            throw CashException("Insufficent cash for spend", e)
+            throw CashException("Insufficient cash for spend", e)
         }
 
         keysForSigning.keys.forEach {
@@ -72,7 +72,7 @@ class CashFlow(val command: CashCommand, override val progressTracker: ProgressT
     private fun exitCash(req: CashCommand.ExitCash): SignedTransaction {
         progressTracker.currentStep = EXITING
         val builder: TransactionBuilder = TransactionType.General.Builder(null)
-        builder.addFlowId(runId.uuid)
+        builder.addLockId(runId.uuid)
         val issuer = serviceHub.myInfo.legalIdentity.ref(req.issueRef)
         try {
             Cash().generateExit(
@@ -121,7 +121,7 @@ class CashFlow(val command: CashCommand, override val progressTracker: ProgressT
     private fun issueCash(req: CashCommand.IssueCash): SignedTransaction {
         progressTracker.currentStep = ISSUING
         val builder: TransactionBuilder = TransactionType.General.Builder(notary = null)
-        builder.addFlowId(runId.uuid)
+        builder.addLockId(runId.uuid)
         val issuer = PartyAndReference(serviceHub.myInfo.legalIdentity, req.issueRef)
         Cash().generateIssue(builder, req.amount.issuedBy(issuer), req.recipient.owningKey, req.notary)
         val myKey = serviceHub.legalIdentityKey

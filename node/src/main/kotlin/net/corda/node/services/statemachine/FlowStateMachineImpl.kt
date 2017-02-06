@@ -12,10 +12,8 @@ import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.FlowStateMachine
 import net.corda.core.flows.StateMachineRunId
 import net.corda.core.random63BitValue
-import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.UntrustworthyData
 import net.corda.core.utilities.trace
-import net.corda.flows.CashFlowResult
 import net.corda.node.services.api.ServiceHubInternal
 import net.corda.node.services.statemachine.StateMachineManager.FlowSession
 import net.corda.node.services.statemachine.StateMachineManager.FlowSessionState
