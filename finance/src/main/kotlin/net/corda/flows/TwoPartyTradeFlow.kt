@@ -63,6 +63,9 @@ object TwoPartyTradeFlow {
                       val price: Amount<Currency>,
                       val myKeyPair: KeyPair,
                       override val progressTracker: ProgressTracker = Seller.tracker()) : FlowLogic<SignedTransaction>() {
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+        override val preference = emptyList<String>() //todo
 
         companion object {
             object AWAITING_PROPOSAL : ProgressTracker.Step("Awaiting transaction proposal")
@@ -162,6 +165,9 @@ object TwoPartyTradeFlow {
                      val notary: Party,
                      val acceptablePrice: Amount<Currency>,
                      val typeToBuy: Class<out OwnableState>) : FlowLogic<SignedTransaction>() {
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+        override val preference = emptyList<String>() // todo
 
         object RECEIVING : ProgressTracker.Step("Waiting for seller trading info")
 

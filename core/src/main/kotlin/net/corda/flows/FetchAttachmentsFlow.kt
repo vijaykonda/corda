@@ -13,6 +13,9 @@ import java.io.InputStream
  */
 class FetchAttachmentsFlow(requests: Set<SecureHash>,
                            otherSide: Party) : FetchDataFlow<Attachment, ByteArray>(requests, otherSide) {
+    override val version = "1.0"
+    override val genericName = javaClass.simpleName
+    override val preference = listOf(version)
 
     override fun load(txid: SecureHash): Attachment? = serviceHub.storageService.attachments.openAttachment(txid)
 

@@ -11,11 +11,11 @@ interface ExistingSessionMessage : SessionMessage {
     val recipientSessionId: Long
 }
 
-data class SessionInit(val initiatorSessionId: Long, val flowName: String, val firstPayload: Any?) : SessionMessage
+data class SessionInit(val initiatorSessionId: Long, val flowName: String, val version: String, val firstPayload: Any?) : SessionMessage
 
 interface SessionInitResponse : ExistingSessionMessage
 
-data class SessionConfirm(val initiatorSessionId: Long, val initiatedSessionId: Long) : SessionInitResponse {
+data class SessionConfirm(val initiatorSessionId: Long, val initiatedSessionId: Long, val flowName: String, val version: String) : SessionInitResponse {
     override val recipientSessionId: Long get() = initiatorSessionId
 }
 
@@ -30,6 +30,9 @@ data class SessionData(override val recipientSessionId: Long, val payload: Any) 
 }
 
 data class SessionEnd(override val recipientSessionId: Long) : ExistingSessionMessage
+
+// Sent in situation when we obtain message on open session but FlowVersion is no longer supported by us.
+data class VersionNoLongerSupported(override val recipientSessionId: Long, val flowName: String, val version: String) : ExistingSessionMessage
 
 data class ReceivedSessionMessage<out M : ExistingSessionMessage>(val sender: Party, val message: M)
 

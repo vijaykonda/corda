@@ -17,6 +17,9 @@ import net.corda.core.transactions.SignedTransaction
  */
 class BroadcastTransactionFlow(val notarisedTransaction: SignedTransaction,
                                val participants: Set<Party>) : FlowLogic<Unit>() {
+    override val version = "1.0"
+    override val genericName = javaClass.simpleName
+    override val preference = listOf(version)
 
     data class NotifyTxRequest(val tx: SignedTransaction)
 

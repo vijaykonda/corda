@@ -1,13 +1,17 @@
 package net.corda.core.node
 
 import net.corda.core.crypto.Party
+import net.corda.core.flows.FlowFactory
 import net.corda.core.flows.FlowLogic
+import net.corda.core.flows.FlowVersionInfo
+import net.corda.core.node.services.ServiceType
 import kotlin.reflect.KClass
 
 /**
  * A service hub to be used by the [CordaPluginRegistry]
  */
 interface PluginServiceHub : ServiceHub {
+    // TODO documentation change
     /**
      * Register the flow factory we wish to use when a initiating party attempts to communicate with us. The
      * registration is done against a marker [KClass] which is sent in the session handshake by the other party. If this
@@ -20,11 +24,20 @@ interface PluginServiceHub : ServiceHub {
      * @param flowFactory The flow factory generating the initiated flow.
      */
 
+    // TODO document both functions API docs
     // TODO: remove dependency on Kotlin relfection (Kotlin KClass -> Java Class).
-    fun registerFlowInitiator(markerClass: KClass<*>, flowFactory: (Party) -> FlowLogic<*>)
+//    @JvmOverloads // TODO add annotations for Java interop with defaults
+    fun registerFlowInitiator(markerClass: KClass<*>, flowFactory: (Party) -> FlowLogic<*>,
+                              serviceType: ServiceType = ServiceType.corda.getSubType("peer_node"))
+
+//    @JvmOverloads // TODO add annotations for Java interop with defaults?
+    fun registerFlowInitiator(flowFactory: FlowFactory, serviceType: ServiceType = ServiceType.corda.getSubType("peer_node"))
 
     /**
      * Return the flow factory that has been registered with [markerClass], or null if no factory is found.
      */
-    fun getFlowFactory(markerClass: Class<*>): ((Party) -> FlowLogic<*>)?
+    fun getFlowFactory(markerClass: Class<*>): ((String, Party) -> FlowLogic<*>?)?
+
+    // TODO We could go with passing markerClasses, but is it always an assumption that node has all flows in communication?
+    fun getFlowFactory(flowName: String): ((String, Party) -> FlowLogic<*>?)?
 }

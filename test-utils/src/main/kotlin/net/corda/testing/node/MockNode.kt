@@ -10,9 +10,11 @@ import net.corda.core.messaging.RPCOps
 import net.corda.core.messaging.SingleMessageRecipient
 import net.corda.core.node.CordaPluginRegistry
 import net.corda.core.node.PhysicalLocation
+import net.corda.core.node.PluginServiceHub
 import net.corda.core.node.services.*
 import net.corda.core.utilities.DUMMY_NOTARY_KEY
 import net.corda.core.utilities.loggerFor
+import net.corda.flows.ResolveTransactionsFlow
 import net.corda.node.internal.AbstractNode
 import net.corda.node.services.api.MessagingServiceInternal
 import net.corda.node.services.config.NodeConfiguration
@@ -33,6 +35,7 @@ import java.security.KeyPair
 import java.util.*
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.function.Function
 
 /**
  * A mock node brings up a suite of in-memory services in a fast manner suitable for unit testing.
@@ -162,9 +165,15 @@ class MockNetwork(private val networkSendManuallyPumped: Boolean = false,
 
         // Allow unit tests to modify the plugin list before the node start,
         // so they don't have to ServiceLoad test plugins into all unit tests.
+        val mockPlugin = MockPlugin()
         val testPluginRegistries = super.pluginRegistries.toMutableList()
         override val pluginRegistries: List<CordaPluginRegistry>
-            get() = testPluginRegistries
+            get() {
+                testPluginRegistries.add(mockPlugin)
+                return testPluginRegistries
+            }
+
+        // TODO predefinedFlowPlugins -> here I could do registration and inFlows can be populated
 
         // This does not indirect through the NodeInfo object so it can be called before the node is started.
         // It is used from the network visualiser tool.

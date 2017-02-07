@@ -22,7 +22,7 @@ object FixingFlow {
 
     class Service(services: PluginServiceHub) {
         init {
-            services.registerFlowInitiator(Floater::class) { Fixer(it) }
+            services.registerFlowInitiator(Floater::class,{ Fixer(it) })
         }
     }
 
@@ -133,6 +133,8 @@ object FixingFlow {
      */
     class FixingRoleDecider(val ref: StateRef,
                             override val progressTracker: ProgressTracker = tracker()) : FlowLogic<Unit>() {
+
+        override val genericName = "FixingFlowDecider"
 
         companion object {
             class LOADING() : ProgressTracker.Step("Loading state to decide fixing role")

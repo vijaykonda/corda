@@ -15,6 +15,7 @@ import net.corda.core.crypto.commonName
 import net.corda.core.flows.FlowLogic
 import net.corda.core.flows.FlowStateMachine
 import net.corda.core.flows.StateMachineRunId
+import net.corda.core.flows.majorVersionMatch
 import net.corda.core.messaging.ReceivedMessage
 import net.corda.core.messaging.TopicSession
 import net.corda.core.messaging.send
@@ -190,11 +191,14 @@ class StateMachineManager(val serviceHub: ServiceHubInternal,
     }
 
     private fun restoreFibersFromCheckpoints() {
+        //TODO What if fiber is no longer supported -> it would be nice to finish communication with other side(s) in a nice way like: VersionNoLongerSupported error msg
+        //  currently there is no easy way of checking for that (as we don't have to register 'out' flows - we can just add them to smm)
+        //  I guess it's more serialization task? - we restore openSessions in StateMachineManager from fibers - needed for graceful communication of changes.
         mutex.locked {
             checkpointStorage.forEach {
                 // If a flow is added before start() then don't attempt to restore it
                 if (!stateMachines.containsValue(it)) {
-                    val fiber = deserializeFiber(it.serializedFiber)
+                    val fiber = deserializeFiber(it.serializedFiber) //todo check version support
                     initFiber(fiber)
                     stateMachines[fiber] = it
                 }
@@ -203,10 +207,12 @@ class StateMachineManager(val serviceHub: ServiceHubInternal,
         }
     }
 
+    // TODO From design doc: Message handlers for no longer supported versions shouldn't be registered - in that case session messages shouldn't be deserialized.
+    // TODO What with protocols only supported to handle existing fibers.
     private fun resumeRestoredFibers() {
         mutex.locked {
             started = true
-            stateMachines.keys.forEach { resumeRestoredFiber(it) }
+            stateMachines.keys.forEach { resumeRestoredFiber(it) } // TODO Use session id in topic (why now it's not used anymore?) -> multiple message handlers for supported versions.
         }
         serviceHub.networkService.addMessageHandler(sessionTopic) { message, reg ->
             executor.checkOnThread()
@@ -249,7 +255,7 @@ class StateMachineManager(val serviceHub: ServiceHubInternal,
                 // We only want to resume once, so immediately reset the flag.
                 session.waitingForResponse = false
                 updateCheckpoint(session.fiber)
-                resumeFiber(session.fiber)
+                resumeFiber(session.fiber) //todo we can resume sth that we don't support
             }
         } else {
             val peerParty = recentlyClosedSessions.remove(message.recipientSessionId)
@@ -266,28 +272,40 @@ class StateMachineManager(val serviceHub: ServiceHubInternal,
         }
     }
 
+    //TODO receive side handlers test
     private fun onSessionInit(sessionInit: SessionInit, sender: Party) {
         logger.trace { "Received $sessionInit $sender" }
         val otherPartySessionId = sessionInit.initiatorSessionId
         try {
-            val markerClass = Class.forName(sessionInit.flowName)
-            val flowFactory = serviceHub.getFlowFactory(markerClass)
+            val flowName = sessionInit.flowName
+            val theirVersion = sessionInit.version
+            val flowFactory = serviceHub.getFlowFactory(flowName)
             if (flowFactory != null) {
-                val flow = flowFactory(sender)
-                val fiber = createFiber(flow)
-                val session = FlowSession(flow, random63BitValue(), FlowSessionState.Initiated(sender, otherPartySessionId))
-                if (sessionInit.firstPayload != null) {
-                    session.receivedMessages += ReceivedSessionMessage(sender, SessionData(session.ourSessionId, sessionInit.firstPayload))
+                val flow = flowFactory(theirVersion, sender)
+                if (flow != null) {
+                    // Check minor/major, because mistakes in registration
+                    if (!majorVersionMatch(flow.version, theirVersion)) {
+                        logger.warn("Couldn't find common version in ${sessionInit}")
+                        sendSessionMessage(sender, SessionReject(otherPartySessionId, "Couldn't find common version for ${flowName}, version: ${theirVersion}")) //todo receive side handle it
+                    }
+                    val fiber = createFiber(flow)
+                    val session = FlowSession(flow, random63BitValue(), FlowSessionState.Initiated(sender, otherPartySessionId, flowName, theirVersion)) //todo their version or ours here? I don't need it at all
+                    if (sessionInit.firstPayload != null) {
+                        session.receivedMessages += ReceivedSessionMessage(sender, SessionData(session.ourSessionId, sessionInit.firstPayload))
+                    }
+                    openSessions[session.ourSessionId] = session
+                    fiber.openSessions[Pair(flow, sender)] = session
+                    updateCheckpoint(fiber)
+                    sendSessionMessage(sender, SessionConfirm(otherPartySessionId, session.ourSessionId, flow.genericName, flow.version), fiber) //TODO receive side, check if it's ok
+                    fiber.logger.debug { "Initiated from $sessionInit on $session" }
+                    startFiber(fiber)
+                } else {
+                    logger.warn("Unknown flow version in $sessionInit, flow: ${flowName} version: ${theirVersion}")
+                    sendSessionMessage(sender, VersionNoLongerSupported(otherPartySessionId, flowName, theirVersion)) // TODO receive side handle it
                 }
-                openSessions[session.ourSessionId] = session
-                fiber.openSessions[Pair(flow, sender)] = session
-                updateCheckpoint(fiber)
-                sendSessionMessage(sender, SessionConfirm(otherPartySessionId, session.ourSessionId), fiber)
-                fiber.logger.debug { "Initiated from $sessionInit on $session" }
-                startFiber(fiber)
             } else {
-                logger.warn("Unknown flow marker class in $sessionInit")
-                sendSessionMessage(sender, SessionReject(otherPartySessionId, "Don't know ${markerClass.name}"))
+                logger.warn("Unknown flow in $sessionInit")
+                sendSessionMessage(sender, SessionReject(otherPartySessionId, "Don't know ${flowName}"))
             }
         } catch (e: Exception) {
             logger.warn("Received invalid $sessionInit", e)
@@ -393,12 +411,15 @@ class StateMachineManager(val serviceHub: ServiceHubInternal,
      *
      * Note that you must be on the [executor] thread.
      */
+    // TODO Other way to do it would be to have factory type to start flow and then choose which one flow will be run as initiator
+    //  after flowVersion discovery. However, it's some significant change in current design.
     fun <T> add(logic: FlowLogic<T>): FlowStateMachine<T> {
         executor.checkOnThread()
         // We swap out the parent transaction context as using this frequently leads to a deadlock as we wait
         // on the flow completion future inside that context. The problem is that any progress checkpoints are
         // unable to acquire the table lock and move forward till the calling transaction finishes.
         // Committing in line here on a fresh context ensure we can progress.
+        logic.versionFormatCheck()
         val fiber = isolatedTransaction(database) {
             val fiber = createFiber(logic)
             updateCheckpoint(fiber)
@@ -468,13 +489,17 @@ class StateMachineManager(val serviceHub: ServiceHubInternal,
     sealed class FlowSessionState {
         abstract val sendToParty: Party
         class Initiating(
-                val otherParty: Party /** This may be a specific peer or a service party */
+                val otherParty: Party, /** This may be a specific peer or a service party */
+                val chosenFlow: String, //todo
+                val chosenVersion: String //todo rethink it if I need it here - YES for checking minor/major match
         ) : FlowSessionState() {
             override val sendToParty: Party get() = otherParty
         }
         class Initiated(
                 val peerParty: Party, /** This must be a peer party */
-                val peerSessionId: Long
+                val peerSessionId: Long,
+                val peerFlowName: String, //todo do we want to keep it at all
+                val peerFlowVersion: String //todo do we want to keep their version
         ) : FlowSessionState() {
             override val sendToParty: Party get() = peerParty
         }

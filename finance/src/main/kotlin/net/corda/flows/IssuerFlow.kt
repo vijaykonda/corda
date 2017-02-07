@@ -8,6 +8,7 @@ import net.corda.core.crypto.SecureHash
 import net.corda.core.flows.FlowLogic
 import net.corda.core.node.NodeInfo
 import net.corda.core.node.PluginServiceHub
+import net.corda.core.node.services.ServiceType
 import net.corda.core.serialization.OpaqueBytes
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.ProgressTracker
@@ -32,6 +33,10 @@ object IssuerFlow {
      */
     class IssuanceRequester(val amount: Amount<Currency>, val issueToParty: Party, val issueToPartyRef: OpaqueBytes,
                             val issuerBankParty: Party): FlowLogic<SignedTransaction>() {
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+        override val preference = listOf(version) //todo
+
         @Suspendable
         override fun call(): SignedTransaction {
             val issueRequest = IssuanceRequestState(amount, issueToParty, issueToPartyRef)
@@ -59,6 +64,9 @@ object IssuerFlow {
             object SENDING_CONFIRM : ProgressTracker.Step("Confirming asset issuance to requester")
             fun tracker() = ProgressTracker(AWAITING_REQUEST, ISSUING, TRANSFERRING, SENDING_CONFIRM)
         }
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+        override val preference = listOf(version) //todo
 
         @Suspendable
         override fun call(): SignedTransaction {
@@ -122,9 +130,9 @@ object IssuerFlow {
 
         class Service(services: PluginServiceHub) {
             init {
-                services.registerFlowInitiator(IssuanceRequester::class) {
+                services.registerFlowInitiator(IssuanceRequester::class, {
                     Issuer(it)
-                }
+                }, ServiceType.corda.getSubType("issuer.USD")) // TODO think of that
             }
         }
     }

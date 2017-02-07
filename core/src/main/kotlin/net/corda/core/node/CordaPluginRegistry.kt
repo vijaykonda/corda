@@ -1,7 +1,9 @@
 package net.corda.core.node
 
 import com.esotericsoftware.kryo.Kryo
+import net.corda.core.flows.FlowVersionInfo
 import net.corda.core.messaging.CordaRPCOps
+import net.corda.core.node.services.ServiceType
 import java.util.function.Function
 
 /**
@@ -9,6 +11,10 @@ import java.util.function.Function
  * to extend a Corda node with additional application services.
  */
 abstract class CordaPluginRegistry(
+        open val serviceType: ServiceType = ServiceType.corda.getSubType("peer_node"), // TODO override it for notaries, oracles etc.
+        // TODO in config we can specify which services we want to advertise
+        // TODO think if we want always advertise as peer node for example -> as default
+
         /**
          * List of lambdas returning JAX-RS objects. They may only depend on the RPC interface, as the webserver should
          * potentially be able to live in a process separate from the node itself.

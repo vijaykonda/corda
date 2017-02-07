@@ -5,6 +5,7 @@ import net.corda.core.RetryableException
 import net.corda.core.contracts.*
 import net.corda.core.crypto.*
 import net.corda.core.flows.FlowLogic
+import net.corda.core.flows.FlowVersionInfo
 import net.corda.core.math.CubicSplineInterpolator
 import net.corda.core.math.Interpolator
 import net.corda.core.math.InterpolatorFactory
@@ -70,11 +71,13 @@ object NodeInterestRates {
             // Note: access to the singleton oracle property is via the registered SingletonSerializeAsToken Service.
             // Otherwise the Kryo serialisation of the call stack in the Quasar Fiber extends to include
             // the framework Oracle and the flow will crash.
-            services.registerFlowInitiator(RatesFixFlow.FixSignFlow::class) { FixSignHandler(it, this) }
-            services.registerFlowInitiator(RatesFixFlow.FixQueryFlow::class) { FixQueryHandler(it, this) }
+            //todo type
+            services.registerFlowInitiator(RatesFixFlow.FixSignFlow::class, { FixSignHandler(it, this) }, "1.0", type)
+            services.registerFlowInitiator(RatesFixFlow.FixQueryFlow::class, { FixQueryHandler(it, this) }, "1.0", type)
         }
 
         private class FixSignHandler(val otherParty: Party, val service: Service) : FlowLogic<Unit>() {
+            override val genericName: String = "FixSignFlow" //todo
             @Suspendable
             override fun call() {
                 val request = receive<RatesFixFlow.SignRequest>(otherParty).unwrap { it }

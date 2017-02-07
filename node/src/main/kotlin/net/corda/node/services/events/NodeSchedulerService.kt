@@ -163,6 +163,11 @@ class NodeSchedulerService(private val database: Database,
     }
 
     class RunScheduled(val scheduledState: ScheduledStateRef, val scheduler: NodeSchedulerService) : FlowLogic<Unit>() {
+        // TODO I guess that versioning of some flows doesn't make sense, like in this case.
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+        override val preference = listOf(version)
+
         companion object {
             object RUNNING : ProgressTracker.Step("Running scheduled...")
 

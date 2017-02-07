@@ -30,6 +30,10 @@ object NotaryChangeFlow : AbstractStateReplacementFlow<Party>() {
                                         newNotary: Party,
                                         progressTracker: ProgressTracker = tracker())
         : AbstractStateReplacementFlow.Instigator<T, Party>(originalState, newNotary, progressTracker) {
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+        override val preference = listOf(version)
+
 
         override fun assembleProposal(stateRef: StateRef, modification: Party, stx: SignedTransaction): AbstractStateReplacementFlow.Proposal<Party>
                 = Proposal(stateRef, modification, stx)
@@ -99,6 +103,9 @@ object NotaryChangeFlow : AbstractStateReplacementFlow<Party>() {
     class Acceptor(otherSide: Party,
                    override val progressTracker: ProgressTracker = tracker())
         : AbstractStateReplacementFlow.Acceptor<Party>(otherSide) {
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+        override val preference = listOf(version)
 
         /**
          * Check the notary change proposal.

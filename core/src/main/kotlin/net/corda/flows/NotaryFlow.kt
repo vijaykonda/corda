@@ -26,6 +26,10 @@ object NotaryFlow {
                       override val progressTracker: ProgressTracker) : FlowLogic<DigitalSignature.WithKey>() {
         constructor(stx: SignedTransaction) : this(stx, Client.tracker())
 
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+        override val preference = emptyList<String>() //todo
+
         companion object {
 
             object REQUESTING : ProgressTracker.Step("Requesting signature by Notary service")
@@ -93,6 +97,10 @@ object NotaryFlow {
     open class Service(val otherSide: Party,
                        val timestampChecker: TimestampChecker,
                        val uniquenessProvider: UniquenessProvider) : FlowLogic<Unit>() {
+
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+        override val preference = emptyList<String>() //todo
 
         @Suspendable
         override fun call() {

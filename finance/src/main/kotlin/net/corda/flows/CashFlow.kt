@@ -22,6 +22,9 @@ import java.util.*
  */
 class CashFlow(val command: CashCommand, override val progressTracker: ProgressTracker) : FlowLogic<CashFlowResult>() {
     constructor(command: CashCommand) : this(command, tracker())
+    override val version = "1.0"
+    override val genericName = javaClass.simpleName
+    override val preference = listOf(version) //todo
 
     companion object {
         object ISSUING : ProgressTracker.Step("Issuing cash")

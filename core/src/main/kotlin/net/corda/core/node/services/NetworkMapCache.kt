@@ -5,13 +5,13 @@ import com.google.common.util.concurrent.ListenableFuture
 import net.corda.core.contracts.Contract
 import net.corda.core.crypto.CompositeKey
 import net.corda.core.crypto.Party
-import net.corda.core.messaging.MessageRecipients
+import net.corda.core.flows.AdvertisedFlow
 import net.corda.core.messaging.MessagingService
 import net.corda.core.messaging.SingleMessageRecipient
 import net.corda.core.node.NodeInfo
-import net.corda.core.node.ServiceEntry
 import net.corda.core.randomOrNull
 import rx.Observable
+import java.util.*
 
 /**
  * A network map contains lists of nodes on the network along with information about their identity keys, services
@@ -81,6 +81,46 @@ interface NetworkMapCache {
     /** Look up all nodes advertising the service owned by [compositeKey] */
     fun getNodesByAdvertisedServiceIdentityKey(compositeKey: CompositeKey): List<NodeInfo> {
         return partyNodes.filter { it.advertisedServices.any { it.identity.owningKey == compositeKey } }
+    }
+
+    // TODO tests, surely it shouldn't be checked in NMC ;)
+    /**
+     * Look up all flow versions from nodes advertising the service owned by [compositeKey]. Return AdvertisedFlow.
+     * If nodes advertise different flow versions (in theory they shouldn't) throw exception.
+     */
+    // TODO it needs more thinking, how to handle situations when we have distributed service, but nodes run different versions.
+    private fun getServiceFlowVersions(compositeKey: CompositeKey, flowName: String): AdvertisedFlow? {
+        val maybeFlowsInfo = ArrayList<AdvertisedFlow?>()
+        for (node in partyNodes) {
+            // Assuming that node doesn't advertise two services with the same key.
+            val match = node.advertisedServices.find { it.identity.owningKey == compositeKey }
+            if (match != null) {
+                val flow = match.info.advertisedFlows.filter { it.genericFlowName == flowName }
+                if (flow.size == 1)
+                    maybeFlowsInfo.add(flow[0])
+                else throw IllegalArgumentException("Service advertises more than one flow entries for the same flow.")
+            }
+        }
+        if (maybeFlowsInfo.isEmpty()) return null
+        else {
+            val firstVs = maybeFlowsInfo[0]
+            require (maybeFlowsInfo.all { it == firstVs }) { "Distributed service nodes should advertise the same flow versions." } //TODO That check should be done on service registration to NMS.
+            return firstVs // Can also return null. It will mean that none of service nodes advertises this flow.
+        }
+    }
+
+    // TODO tests
+    /**
+     * Look up both nodes advertising service and peer nodes to figure out what flow versions are they speaking.
+     * Takes key and flow we are looking for.
+     */
+    fun getFlowVersionInfo(compositeKey: CompositeKey, flowName: String): AdvertisedFlow? {
+        val maybePeerInfo = getNodeByLegalIdentityKey(compositeKey)
+        return if (maybePeerInfo != null) { // Assuming that node's key and services' keys are distinct.
+            val flow = maybePeerInfo.advertisedPeerFlows.filter { it.genericFlowName == flowName }
+            if (flow.size == 1) flow[0]
+            else throw IllegalArgumentException("Peer advertises more than one flow entries for the same flow.")
+        } else getServiceFlowVersions(compositeKey, flowName)
     }
 
     /** Returns information about the party, which may be a specific node or a service */

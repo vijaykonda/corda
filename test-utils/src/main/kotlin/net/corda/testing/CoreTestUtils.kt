@@ -144,6 +144,13 @@ inline fun <reified P : FlowLogic<*>> AbstractNode.initiateSingleShotFlow(
     return future
 }
 
+// TODO get rid of it
+abstract class DefaultFlowVersion<T>: FlowLogic<T>() {
+    final override val version = "1.0"
+    final override val preference = listOf(version)
+    final override val genericName = javaClass.simpleName
+}
+
 data class TestNodeConfiguration(
         override val baseDirectory: Path,
         override val myLegalName: String,

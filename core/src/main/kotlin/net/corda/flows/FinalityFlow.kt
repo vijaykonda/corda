@@ -19,6 +19,10 @@ class FinalityFlow(val transaction: SignedTransaction,
                    override val progressTracker: ProgressTracker) : FlowLogic<Unit>() {
     constructor(transaction: SignedTransaction, participants: Set<Party>) : this(transaction, participants, tracker())
 
+    override val version = "1.0"
+    override val genericName = javaClass.simpleName
+    override val preference = listOf(version)
+
     companion object {
         object NOTARISING : ProgressTracker.Step("Requesting signature by notary service")
         object BROADCASTING : ProgressTracker.Step("Broadcasting transaction to participants")

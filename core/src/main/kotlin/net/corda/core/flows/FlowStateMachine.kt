@@ -42,3 +42,4 @@ interface FlowStateMachine<R> {
 }
 
 class FlowException(message: String) : RuntimeException(message)
+class FlowVersionException(message: String) : Exception(message) // TODO change after Shams work

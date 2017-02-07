@@ -74,9 +74,12 @@ object TwoPartyDealFlow {
         abstract val otherParty: Party
         abstract val myKeyPair: KeyPair
 
-        override fun getCounterpartyMarker(party: Party): Class<*> {
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+
+        override fun getCounterpartyMarker(party: Party): String {
             return if (serviceHub.networkMapCache.regulatorNodes.any { it.legalIdentity == party }) {
-                MarkerForBogusRegulatorFlow::class.java
+                MarkerForBogusRegulatorFlow::class.java.simpleName
             } else {
                 super.getCounterpartyMarker(party)
             }
@@ -201,6 +204,8 @@ object TwoPartyDealFlow {
 
             fun tracker() = ProgressTracker(RECEIVING, VERIFYING, SIGNING, SWAPPING_SIGNATURES, RECORDING)
         }
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
 
         abstract val otherParty: Party
 
@@ -273,7 +278,7 @@ object TwoPartyDealFlow {
                           override val payload: AutoOffer,
                           override val myKeyPair: KeyPair,
                           override val progressTracker: ProgressTracker = Primary.tracker()) : Primary() {
-
+        override val preference = listOf(super.version) // TODO + getCounterpartyMarker
         override val notaryNode: NodeInfo get() =
         serviceHub.networkMapCache.notaryNodes.filter { it.notaryIdentity == payload.notary }.single()
     }
@@ -283,6 +288,7 @@ object TwoPartyDealFlow {
      */
     open class Acceptor(override val otherParty: Party,
                         override val progressTracker: ProgressTracker = Secondary.tracker()) : Secondary<AutoOffer>() {
+        override val preference = listOf(super.version) // TODO + getCounterpartyMarker
 
         override fun validateHandshake(handshake: Handshake<AutoOffer>): Handshake<AutoOffer> {
             // What is the seller trying to sell us?

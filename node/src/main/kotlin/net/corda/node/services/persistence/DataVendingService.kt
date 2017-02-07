@@ -46,6 +46,10 @@ object DataVending {
 
 
         private class FetchTransactionsHandler(val otherParty: Party) : FlowLogic<Unit>() {
+            override val version = "1.0"
+            override val genericName = javaClass.simpleName
+            override val preference = listOf(version)
+
             @Suspendable
             override fun call() {
                 val request = receive<FetchDataFlow.Request>(otherParty).unwrap {
@@ -65,6 +69,10 @@ object DataVending {
 
         // TODO: Use Artemis message streaming support here, called "large messages". This avoids the need to buffer.
         private class FetchAttachmentsHandler(val otherParty: Party) : FlowLogic<Unit>() {
+            override val version = "1.0"
+            override val genericName = javaClass.simpleName
+            override val preference = listOf(version)
+
             @Suspendable
             override fun call() {
                 val request = receive<FetchDataFlow.Request>(otherParty).unwrap {
@@ -90,6 +98,10 @@ object DataVending {
         // TODO: Do we want to be able to reject specific transactions on more complex rules, for example reject incoming
         //       cash without from unknown parties?
         class NotifyTransactionHandler(val otherParty: Party) : FlowLogic<Unit>() {
+            override val version = "1.0"
+            override val genericName = javaClass.simpleName
+            override val preference = listOf(version)
+
             @Suspendable
             override fun call() {
                 val request = receive<BroadcastTransactionFlow.NotifyTxRequest>(otherParty).unwrap { it }

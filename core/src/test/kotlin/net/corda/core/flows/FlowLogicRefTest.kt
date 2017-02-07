@@ -1,6 +1,7 @@
 package net.corda.core.flows
 
 import net.corda.core.days
+import net.corda.testing.DefaultFlowVersion
 import org.junit.Before
 import org.junit.Test
 import java.time.Duration
@@ -11,7 +12,7 @@ class FlowLogicRefTest {
     data class ParamType2(val value: String)
 
     @Suppress("UNUSED_PARAMETER", "unused") // Things are used via reflection.
-    class KotlinFlowLogic(A: ParamType1, b: ParamType2) : FlowLogic<Unit>() {
+    class KotlinFlowLogic(A: ParamType1, b: ParamType2) : DefaultFlowVersion<Unit>() {
         constructor() : this(ParamType1(1), ParamType2("2"))
 
         constructor(C: ParamType2) : this(ParamType1(1), C)
@@ -25,12 +26,12 @@ class FlowLogicRefTest {
         override fun call() = Unit
     }
 
-    class KotlinNoArgFlowLogic : FlowLogic<Unit>() {
+    class KotlinNoArgFlowLogic : DefaultFlowVersion<Unit>() {
         override fun call() = Unit
     }
 
     @Suppress("UNUSED_PARAMETER") // We will never use A or b
-    class NotWhiteListedKotlinFlowLogic(A: Int, b: String) : FlowLogic<Unit>() {
+    class NotWhiteListedKotlinFlowLogic(A: Int, b: String) : DefaultFlowVersion<Unit>() {
         override fun call() = Unit
     }
 

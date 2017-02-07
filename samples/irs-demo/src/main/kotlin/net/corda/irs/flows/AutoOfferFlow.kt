@@ -36,11 +36,14 @@ object AutoOfferFlow {
         }
 
         init {
-            services.registerFlowInitiator(Instigator::class) { Acceptor(it) }
+            services.registerFlowInitiator(Instigator::class, { Acceptor(it) })
         }
     }
 
     class Requester(val dealToBeOffered: DealState) : FlowLogic<SignedTransaction>() {
+        override val version = "1.0"
+        override val genericName = javaClass.simpleName
+        override val preference = listOf(version)
 
         companion object {
             object RECEIVED : ProgressTracker.Step("Received API call")

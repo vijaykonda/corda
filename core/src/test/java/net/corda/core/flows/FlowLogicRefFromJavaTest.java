@@ -1,5 +1,6 @@
 package net.corda.core.flows;
 
+import net.corda.testing.DefaultFlowVersion;
 import org.junit.*;
 
 import java.util.*;
@@ -22,7 +23,7 @@ public class FlowLogicRefFromJavaTest {
         }
     }
 
-    private static class JavaFlowLogic extends FlowLogic<Void> {
+    private static class JavaFlowLogic extends DefaultFlowVersion<Void> {
 
         public JavaFlowLogic(ParamType1 A, ParamType2 b) {
         }
@@ -33,7 +34,7 @@ public class FlowLogicRefFromJavaTest {
         }
     }
 
-    private static class JavaNoArgFlowLogic extends FlowLogic<Void> {
+    private static class JavaNoArgFlowLogic extends DefaultFlowVersion<Void> {
 
         public JavaNoArgFlowLogic() {
         }

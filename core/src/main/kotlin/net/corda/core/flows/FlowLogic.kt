@@ -8,6 +8,38 @@ import net.corda.core.utilities.UntrustworthyData
 import org.slf4j.Logger
 import rx.Observable
 
+// TODO move it to flowVersions
+val versionRegex = Regex("^(\\d+\\.\\d*)$") // Format: Major.Minor
+/**
+ * Interface for storing versioning metadata.
+ */
+interface FlowVersion {
+    val version: String
+    val genericName: String
+    // TODO It's very tricky, we would have to store so much metadata and I don't want to.
+    //  One question arises, do we always keep pairs of sender - receiver flows on node, what if not?
+    //  Another problem is that we don't have to register flow anywhere to start it manually (with smm.add).
+    //  If we knew what flows will be started on a node, then we don't need to keep preference/compatibility in FlowLogic,
+    //  because it's unnecessary duplication with registerFlowInitiator.
+    // TODO After 1:1 with Mike I was enlightened that there exists sth like annotations ;)
+    /**
+     * Ordered list of versions we can speak with.
+     */
+    val preference: List<String>
+
+    /**
+     * Check if given version is compatible with this FlowLogic. You can specify range check.
+     */
+    fun isCompatible(flowVersion: String): Boolean = flowVersion in listOf(version)
+
+    /**
+     * Used to assure that version numbers are of correct format: Major.Minor. Checked when starting flow in StateMachineManager.add
+     */
+    fun versionFormatCheck() {
+        require(version.matches(versionRegex))
+        require(preference.all { it.matches(versionRegex) })
+    }
+}
 /**
  * A sub-class of [FlowLogic<T>] implements a flow using direct, straight line blocking code. Thus you
  * can write complex flow logic in an ordinary fashion, without having to think about callbacks, restarting after
@@ -25,7 +57,7 @@ import rx.Observable
  * If you'd like to use another FlowLogic class as a component of your own, construct it on the fly and then pass
  * it to the [subFlow] method. It will return the result of that flow when it completes.
  */
-abstract class FlowLogic<out T> {
+abstract class FlowLogic<out T>: FlowVersion {
     /** This is where you should log things to. */
     val logger: Logger get() = stateMachine.logger
 
@@ -44,7 +76,7 @@ abstract class FlowLogic<out T> {
      * other side. The default implementation returns the class object of this FlowLogic, but any [Class] instance
      * will do as long as the other side registers with it.
      */
-    open fun getCounterpartyMarker(party: Party): Class<*> = javaClass
+    open fun getCounterpartyMarker(party: Party): String = javaClass.simpleName //TODO move to FlowVersion interface
 
     /**
      * Serializes and queues the given [payload] object for sending to the [otherParty]. Suspends until a response
@@ -127,6 +159,9 @@ abstract class FlowLogic<out T> {
         if (shareParentSessions) {
             subLogic.sessionFlow = this
         }
+        // TODO Flow versioning -> problems if they share parent session (no version negotiation)
+        //  Think about CashFlow that doesn't do send/receive, but calls subflows.
+        //  Only subflows versions will be negotiated.
         val result = subLogic.call()
         // It's easy to forget this when writing flows so we just step it to the DONE state when it completes.
         subLogic.progressTracker?.currentStep = ProgressTracker.DONE
