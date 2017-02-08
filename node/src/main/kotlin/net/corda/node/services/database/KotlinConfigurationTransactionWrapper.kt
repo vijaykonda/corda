@@ -136,10 +136,12 @@ class KotlinConfigurationTransactionWrapper(private val model: EntityModel,
     class CordaConnection(val connection: Connection) : Connection by connection {
         override fun close() {
             // TODO: address requery auto-closing the connection in SchemaModifier upon table creation
+            // https://github.com/requery/requery/issues/424
         }
 
         override fun setAutoCommit(autoCommit: Boolean) {
             // TODO: address requery bug in ConnectionTransaction commit()
+            // https://github.com/requery/requery/issues/423
             connection.autoCommit = false
         }
     }

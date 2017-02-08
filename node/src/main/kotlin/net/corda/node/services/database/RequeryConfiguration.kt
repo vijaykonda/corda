@@ -20,6 +20,7 @@ class RequeryConfiguration(val properties: Properties, val useDefaultLogging: Bo
     // 2. set other generic database configuration options: show_sql, format_sql
     // 3. Configure Requery Database platform specific features (see http://requery.github.io/javadoc/io/requery/sql/Platform.html)
     // 4. Configure Cache Manager and Cache Provider and set in Requery Configuration (see http://requery.github.io/javadoc/io/requery/EntityCache.html)
+    // 5. Consider database schema deployment/upgrade strategies to replace dynamic table creation.
 
     // Note: Annotations are pre-processed using (kapt) so no need to register dynamically
     val config = HikariConfig(properties)
