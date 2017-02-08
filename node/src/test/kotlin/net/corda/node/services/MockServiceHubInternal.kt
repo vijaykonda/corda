@@ -16,16 +16,13 @@ import net.corda.node.services.api.ServiceHubInternal
 import net.corda.node.services.persistence.DataVending
 import net.corda.node.services.schema.NodeSchemaService
 import net.corda.node.services.statemachine.StateMachineManager
-import net.corda.node.services.vault.NodeVaultService
 import net.corda.testing.MOCK_IDENTITY_SERVICE
 import net.corda.testing.node.MockNetworkMapCache
 import net.corda.testing.node.MockStorageService
-import net.corda.testing.node.makeTestDataSourceProperties
 import java.time.Clock
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.reflect.KClass
 
-@Suppress("LeakingThis")
 open class MockServiceHubInternal(
         val customVault: VaultService? = null,
         val keyManagement: KeyManagementService? = null,

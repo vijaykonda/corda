@@ -31,7 +31,6 @@ object CommercialPaperSchemaV1 : MappedSchema(schemaFamily = CommercialPaperSche
             @Column(name = "owner_key")
             var owner: String,
 
-            @Convert(InstantConverter::class)
             @Column(name = "maturity_instant")
             var maturity: Instant,
 

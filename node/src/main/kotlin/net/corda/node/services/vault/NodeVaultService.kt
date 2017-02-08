@@ -71,8 +71,7 @@ class NodeVaultService(private val services: ServiceHub, dataSourceProperties: P
 
                 session.withTransaction(TransactionIsolation.REPEATABLE_READ) {
                     producedStateRefsMap.forEach { it ->
-                        val state = VaultStatesEntity()
-                        state.apply {
+                        val state = VaultStatesEntity().apply {
                             txId = it.key.txhash.toString()
                             index = it.key.index
                             stateStatus = Vault.StateStatus.UNCONSUMED

@@ -62,7 +62,9 @@ class RequeryConfigurationTest {
 
         databaseTransaction(database) {
             transactionStorage.addTransaction(txn)
-            requerySession.insert(createVaultStateEntity(txn))
+            requerySession.withTransaction {
+                insert(createVaultStateEntity(txn))
+            }
         }
 
         databaseTransaction(database) {
@@ -80,11 +82,11 @@ class RequeryConfigurationTest {
 
         databaseTransaction(database) {
             transactionStorage.addTransaction(txn)
-            requerySession.upsert(createCashBalance())
             requerySession.withTransaction {
-                println(requerySession.select(VaultSchema.VaultCashBalances::class).get().first())
+                upsert(createCashBalance())
+                select(VaultSchema.VaultCashBalances::class).get().first()
+                insert(createVaultStateEntity(txn))
             }
-            requerySession.insert(createVaultStateEntity(txn))
         }
 
         databaseTransaction(database) {
