@@ -123,8 +123,7 @@ class RequeryConfigurationTest {
 
     private fun createVaultStateEntity(txn: SignedTransaction): VaultStatesEntity {
         val txnState = txn.tx.inputs[0]
-        val state = VaultStatesEntity()
-        state.apply {
+        val state = VaultStatesEntity().apply {
             txId = txnState.txhash.toString()
             index = txnState.index
             stateStatus = Vault.StateStatus.UNCONSUMED
