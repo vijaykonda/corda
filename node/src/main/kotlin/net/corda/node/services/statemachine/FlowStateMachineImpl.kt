@@ -6,6 +6,7 @@ import co.paralleluniverse.fibers.Suspendable
 import co.paralleluniverse.strands.Strand
 import com.google.common.util.concurrent.ListenableFuture
 import com.google.common.util.concurrent.SettableFuture
+import net.corda.core.abbreviate
 import net.corda.core.crypto.Party
 import net.corda.core.crypto.SecureHash
 import net.corda.core.flows.FlowException
@@ -15,10 +16,9 @@ import net.corda.core.flows.StateMachineRunId
 import net.corda.core.random63BitValue
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.utilities.UntrustworthyData
+import net.corda.core.utilities.debug
 import net.corda.core.utilities.trace
 import net.corda.node.services.api.ServiceHubInternal
-import net.corda.node.services.statemachine.StateMachineManager.FlowSession
-import net.corda.node.services.statemachine.StateMachineManager.FlowSessionState
 import net.corda.node.utilities.StrandLocalTransactionManager
 import net.corda.node.utilities.createDatabaseTransaction
 import org.jetbrains.exposed.sql.Database
@@ -28,11 +28,10 @@ import org.slf4j.Logger
 import org.slf4j.LoggerFactory
 import java.sql.SQLException
 import java.util.*
-import java.util.concurrent.ExecutionException
 
 class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
                               val logic: FlowLogic<R>,
-                              scheduler: FiberScheduler) : Fiber<Unit>("flow", scheduler), FlowStateMachine<R> {
+                              scheduler: FiberScheduler) : Fiber<Unit>(id.toString(), scheduler), FlowStateMachine<R> {
     companion object {
         // Used to work around a small limitation in Quasar.
         private val QUASAR_UNBLOCKER = run {
@@ -58,7 +57,7 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
     @Transient private var _logger: Logger? = null
     override val logger: Logger get() {
         return _logger ?: run {
-            val l = LoggerFactory.getLogger(id.toString())
+            val l = LoggerFactory.getLogger("net.corda.flow.$id")
             _logger = l
             return l
         }
@@ -80,12 +79,12 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
 
     init {
         logic.stateMachine = this
-        name = id.toString()
     }
 
     @Suspendable
     override fun run() {
         createTransaction()
+        logger.debug { "Calling flow: $logic" }
         val result = try {
             logic.call()
         } catch (e: FlowException) {
@@ -93,11 +92,13 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
             val propagated = e.stackTrace[0].className == javaClass.name
             actionOnEnd(e, propagated)
             _resultFuture?.setException(e)
+            logger.debug("Error response (propagated=$propagated)", e)
             return
         } catch (t: Throwable) {
+            logger.warn("Terminated by exception", t)
             actionOnEnd(t, false)
             _resultFuture?.setException(t)
-            throw ExecutionException(t)
+            return
         }
 
         // Only sessions which have a single send and nothing else will block here
@@ -107,6 +108,7 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
         // This is to prevent actionOnEnd being called twice if it throws an exception
         actionOnEnd(null, false)
         _resultFuture?.set(result)
+        logger.debug { "Flow result: $result" }
     }
 
     private fun createTransaction() {
@@ -134,6 +136,7 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
                                           otherParty: Party,
                                           payload: Any,
                                           sessionFlow: FlowLogic<*>): UntrustworthyData<T> {
+        logger.debug { "sendAndReceive(${receiveType.name}, $otherParty, ${payload.toString().abbreviate(100)}) ..." }
         val session = getConfirmedSession(otherParty, sessionFlow)
         return if (session == null) {
             val newSession = startNewSession(otherParty, sessionFlow, payload, waitForConfirmation = true)
@@ -141,20 +144,22 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
             receiveInternal<SessionData>(newSession, receiveType)
         } else {
             sendAndReceiveInternal<SessionData>(session, createSessionData(session, payload), receiveType)
-        }.checkPayloadIs(receiveType)
+        }.checkPayloadIs(receiveType, logger)
     }
 
     @Suspendable
     override fun <T : Any> receive(receiveType: Class<T>,
                                    otherParty: Party,
                                    sessionFlow: FlowLogic<*>): UntrustworthyData<T> {
+        logger.debug { "receive(${receiveType.name}, $otherParty) ..." }
         val session = getConfirmedSession(otherParty, sessionFlow) ?:
                 startNewSession(otherParty, sessionFlow, null, waitForConfirmation = true)
-        return receiveInternal<SessionData>(session, receiveType).checkPayloadIs(receiveType)
+        return receiveInternal<SessionData>(session, receiveType).checkPayloadIs(receiveType, logger)
     }
 
     @Suspendable
     override fun send(otherParty: Party, payload: Any, sessionFlow: FlowLogic<*>) {
+        logger.debug { "send($otherParty, ${payload.toString().abbreviate(100)})" }
         val session = getConfirmedSession(otherParty, sessionFlow)
         if (session == null) {
             // Don't send the payload again if it was already piggy-backed on a session init
@@ -162,6 +167,27 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
         } else {
             sendInternal(session, createSessionData(session, payload))
         }
+    }
+
+    @Suspendable
+    override fun waitForLedgerCommit(hash: SecureHash, sessionFlow: FlowLogic<*>): SignedTransaction {
+        logger.debug { "waitForLedgerCommit($hash) ..." }
+        suspend(WaitForLedgerCommit(hash, sessionFlow.stateMachine as FlowStateMachineImpl<*>))
+        val stx = serviceHub.storageService.validatedTransactions.getTransaction(hash)
+        if (stx != null) {
+            logger.debug { "Transaction $hash committed to ledger" }
+            return stx
+        }
+
+        // If the tx isn't committed then we may have been resumed due to an session ending in an error
+        for (session in openSessions.values) {
+            for (receivedMessage in session.receivedMessages) {
+                if (receivedMessage.message is ErrorSessionEnd) {
+                    session.erroredEnd(receivedMessage.message)
+                }
+            }
+        }
+        throw IllegalStateException("We were resumed after waiting for $hash but it wasn't found in our local storage")
     }
 
     /**
@@ -176,23 +202,6 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
             sessionInitResponse as SessionReject
             throw FlowException("Party ${state.sendToParty} rejected session request: ${sessionInitResponse.errorMessage}")
         }
-    }
-
-    @Suspendable
-    override fun waitForLedgerCommit(hash: SecureHash, sessionFlow: FlowLogic<*>): SignedTransaction {
-        logger.info("Waiting for transaction $hash to commit")
-        suspend(WaitForLedgerCommit(hash, sessionFlow.stateMachine as FlowStateMachineImpl<*>))
-        val stx = serviceHub.storageService.validatedTransactions.getTransaction(hash)
-        if (stx != null) return stx
-        // If the tx isn't committed then we may have been resumed due to an session ending in an error
-        for (session in openSessions.values) {
-            for (receivedMessage in session.receivedMessages) {
-                if (receivedMessage.message is ErrorSessionEnd) {
-                    session.erroredEnd(receivedMessage.message)
-                }
-            }
-        }
-        throw IllegalStateException("We were resumed after waiting for $hash but it wasn't found in our local storage")
     }
 
     private fun createSessionData(session: FlowSession, payload: Any): SessionData {
@@ -212,14 +221,14 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
     private inline fun <reified M : ExistingSessionMessage> receiveInternal(
             session: FlowSession,
             userReceiveType: Class<*>?): ReceivedSessionMessage<M> {
-        return waitForMessage(ReceiveOnly(session, M::class.java), userReceiveType)
+        return waitForMessage(ReceiveOnly(session, M::class.java, userReceiveType))
     }
 
     private inline fun <reified M : ExistingSessionMessage> sendAndReceiveInternal(
             session: FlowSession,
             message: SessionMessage,
             userReceiveType: Class<*>?): ReceivedSessionMessage<M> {
-        return waitForMessage(SendAndReceive(session, message, M::class.java), userReceiveType)
+        return waitForMessage(SendAndReceive(session, message, M::class.java, userReceiveType))
     }
 
     @Suspendable
@@ -253,11 +262,10 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
     }
 
     @Suspendable
-    private fun <M : ExistingSessionMessage> waitForMessage(
-            receiveRequest: ReceiveRequest<M>,
-            userReceiveType: Class<*>?): ReceivedSessionMessage<M> {
+
+    private fun <M : ExistingSessionMessage> waitForMessage(receiveRequest: ReceiveRequest<M>): ReceivedSessionMessage<M> {
         val receivedMessage = receiveRequest.suspendAndExpectReceive()
-        return receivedMessage.confirmReceiveType(receiveRequest, userReceiveType)
+        return receivedMessage.confirmReceiveType(receiveRequest)
     }
 
     @Suspendable
@@ -280,8 +288,7 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
     }
 
     private fun <M : ExistingSessionMessage> ReceivedSessionMessage<*>.confirmReceiveType(
-            receiveRequest: ReceiveRequest<M>,
-            userReceiveType: Class<*>?): ReceivedSessionMessage<M> {
+            receiveRequest: ReceiveRequest<M>): ReceivedSessionMessage<M> {
         val session = receiveRequest.session
         val receiveType = receiveRequest.receiveType
         if (receiveType.isInstance(message)) {
@@ -292,7 +299,7 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
             if (message is ErrorSessionEnd) {
                 session.erroredEnd(message)
             } else {
-                val expectedType = userReceiveType?.name ?: receiveType.simpleName
+                val expectedType = receiveRequest.userReceiveType?.name ?: receiveType.simpleName
                 throw FlowSessionException("Counterparty flow on ${session.state.sendToParty} has completed without " +
                         "sending a $expectedType")
             }
@@ -310,7 +317,7 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
             throw FlowSessionException("Counterparty flow on ${state.sendToParty} had an internal error and has terminated")
         }
     }
-    
+
     @Suspendable
     private fun suspend(ioRequest: FlowIORequest) {
         // We have to pass the thread local database transaction across via a transient field as the fiber park
@@ -321,7 +328,7 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
             waitingForResponse = ioRequest
 
         var exceptionDuringSuspend: Throwable? = null
-        parkAndSerialize { fiber, serializer ->
+        parkAndSerialize { f, s ->
             logger.trace { "Suspended on $ioRequest" }
             // restore the Tx onto the ThreadLocal so that we can commit the ensuing checkpoint to the DB
             try {
@@ -332,6 +339,7 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
                 // Quasar does not terminate the fiber properly if an exception occurs during a suspend. We have to
                 // resume the fiber just so that we can throw it when it's running.
                 exceptionDuringSuspend = t
+                logger.trace("Resuming so fiber can terminate on exception during suspend process", t)
                 resume(scheduler)
             }
         }
@@ -353,7 +361,6 @@ class FlowStateMachineImpl<R>(override val id: StateMachineRunId,
                 logger.trace("Started")
                 start()
             } else {
-                logger.trace("Resumed")
                 Fiber.unpark(this, QUASAR_UNBLOCKER)
             }
         } catch (t: Throwable) {

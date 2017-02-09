@@ -14,7 +14,7 @@
         <Console name="Console-Appender" target="SYSTEM_OUT">
             <PatternLayout>
                 <pattern>
-                    %highlight{%level{length=1} %d{HH:mm:ss} %T %c{1}.%M - %msg%n}{INFO=white,WARN=red,FATAL=bright red blink}
+                    %highlight{%level{length=1} %d{HH:mm:ss} [%t] %c{2}.%M - %msg%n}{INFO=white,WARN=red,FATAL=bright red blink}
                 </pattern>>
             </PatternLayout>
         </Console>
@@ -25,7 +25,7 @@
                      fileName="${sys:log-path}/${log-name}.log"
                      filePattern="${archive}/${log-name}.%d{yyyy-MM-dd}-%i.log.gz">
 
-            <PatternLayout pattern="[%-5level] %d{ISO8601}{GMT+0} [%t] %c{1} - %msg%n"/>
+            <PatternLayout pattern="[%-5level] %d{ISO8601}{GMT+0} [%t] %c{2} - %msg%n"/>
 
             <Policies>
                 <TimeBasedTriggeringPolicy/>

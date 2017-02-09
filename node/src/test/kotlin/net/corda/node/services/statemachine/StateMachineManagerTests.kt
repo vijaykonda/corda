@@ -2,7 +2,6 @@ package net.corda.node.services.statemachine
 
 import co.paralleluniverse.fibers.Fiber
 import co.paralleluniverse.fibers.Suspendable
-import co.paralleluniverse.strands.Strand.UncaughtExceptionHandler
 import com.google.common.util.concurrent.ListenableFuture
 import net.corda.core.contracts.DOLLARS
 import net.corda.core.contracts.DummyState
@@ -17,11 +16,11 @@ import net.corda.core.messaging.MessageRecipients
 import net.corda.core.node.services.PartyInfo
 import net.corda.core.node.services.ServiceInfo
 import net.corda.core.random63BitValue
-import net.corda.core.rootCause
 import net.corda.core.serialization.OpaqueBytes
 import net.corda.core.serialization.deserialize
 import net.corda.core.transactions.SignedTransaction
 import net.corda.core.transactions.TransactionBuilder
+import net.corda.core.utilities.LogHelper
 import net.corda.core.utilities.unwrap
 import net.corda.flows.CashIssueFlow
 import net.corda.flows.CashPaymentFlow
@@ -62,6 +61,7 @@ class StateMachineManagerTests {
 
     @Before
     fun start() {
+        LogHelper.setLevel("+net.corda.flow")
         val nodes = net.createTwoNodes()
         node1 = nodes.first
         node2 = nodes.second
@@ -111,17 +111,11 @@ class StateMachineManagerTests {
         fiber.actionOnSuspend = {
             throw exceptionDuringSuspend
         }
-        var uncaughtException: Throwable? = null
-        fiber.uncaughtExceptionHandler = UncaughtExceptionHandler { f, e ->
-            uncaughtException = e
-        }
         net.runNetwork()
         assertThatThrownBy {
             fiber.resultFuture.getOrThrow()
         }.isSameAs(exceptionDuringSuspend)
         assertThat(node1.smm.allStateMachines).isEmpty()
-        // Make sure it doesn't get swallowed up
-        assertThat(uncaughtException?.rootCause).isSameAs(exceptionDuringSuspend)
         // Make sure the fiber does actually terminate
         assertThat(fiber.isTerminated).isTrue()
     }

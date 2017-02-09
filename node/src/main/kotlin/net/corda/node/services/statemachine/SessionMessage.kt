@@ -4,6 +4,8 @@ import net.corda.core.abbreviate
 import net.corda.core.crypto.Party
 import net.corda.core.flows.FlowException
 import net.corda.core.utilities.UntrustworthyData
+import net.corda.core.utilities.debug
+import org.slf4j.Logger
 
 interface SessionMessage
 
@@ -32,8 +34,9 @@ data class ErrorSessionEnd(override val recipientSessionId: Long, val errorRespo
 
 data class ReceivedSessionMessage<out M : ExistingSessionMessage>(val sender: Party, val message: M)
 
-fun <T> ReceivedSessionMessage<SessionData>.checkPayloadIs(type: Class<T>): UntrustworthyData<T> {
+fun <T> ReceivedSessionMessage<SessionData>.checkPayloadIs(type: Class<T>, logger: Logger): UntrustworthyData<T> {
     if (type.isInstance(message.payload)) {
+        logger.debug { "Received ${message.payload.toString().abbreviate(100)}" }
         return UntrustworthyData(type.cast(message.payload))
     } else {
         throw FlowSessionException("We were expecting a ${type.name} from $sender but we instead got a " +
